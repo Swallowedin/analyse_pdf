@@ -11,10 +11,12 @@ import logging
 import os
 import base64
 import io
+import re
+import matplotlib.pyplot as plt
 
 # Configuration de la page Streamlit
 st.set_page_config(
-    page_title="Extracteur de Tableaux PDF",
+    page_title="Extracteur de Relevés de Charges",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -25,32 +27,26 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger('pdf-table-extractor')
+logger = logging.getLogger('pdf-charges-extractor')
 
-class PDFTableExtractor:
+class PDFChargesExtractor:
     """
-    Classe pour extraire des tableaux à partir de fichiers PDF, 
-    en utilisant OCR pour les PDF qui contiennent des tableaux sous forme d'images.
+    Classe pour extraire des tableaux de charges à partir de fichiers PDF,
+    en utilisant OCR si nécessaire et en structurant les données pour analyse.
     """
     
-    def __init__(self, pdf_file, output_format='csv'):
+    def __init__(self, pdf_file):
         """
-        Initialise l'extracteur de tableaux PDF.
+        Initialise l'extracteur de relevés de charges.
         
         Args:
             pdf_file (BytesIO): Fichier PDF chargé en mémoire.
-            output_format (str, optional): Format de sortie ('csv', 'xlsx', ou 'json').
         """
         self.pdf_file = pdf_file
-        self.output_format = output_format.lower()
         
         # Créer un dossier temporaire pour les fichiers intermédiaires
         self.temp_dir = tempfile.mkdtemp()
         
-        # Vérifier le format de sortie
-        if self.output_format not in ['csv', 'xlsx', 'json']:
-            raise ValueError("Le format de sortie doit être 'csv', 'xlsx' ou 'json'.")
-    
     def extract_tables_direct(self):
         """
         Extraction directe des tableaux à partir d'un PDF en utilisant tabula-py.
@@ -71,7 +67,9 @@ class PDFTableExtractor:
                 temp_pdf_path, 
                 pages='all', 
                 multiple_tables=True,
-                guess=True
+                guess=True,
+                lattice=True,
+                stream=True
             )
             
             if tables and len(tables) > 0:
@@ -173,10 +171,16 @@ class PDFTableExtractor:
             # Utiliser OCR pour extraire le texte du tableau
             try:
                 # Utiliser pytesseract pour OCR
-                ocr_text = pytesseract.image_to_string(Image.open(temp_table_path))
+                ocr_text = pytesseract.image_to_string(Image.open(temp_table_path), lang='fra')
                 
-                # Utiliser pytesseract spécifiquement pour les tableaux
-                ocr_data = pytesseract.image_to_data(Image.open(temp_table_path), output_type=pytesseract.Output.DATAFRAME)
+                # Configuration spéciale pour les tableaux
+                custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+                ocr_data = pytesseract.image_to_data(
+                    Image.open(temp_table_path), 
+                    output_type=pytesseract.Output.DATAFRAME,
+                    config=custom_config,
+                    lang='fra'
+                )
                 
                 # Tenter de reconstruire une structure tabulaire
                 table_data = self.reconstruct_table_from_ocr(ocr_data, ocr_text)
@@ -274,7 +278,7 @@ class PDFTableExtractor:
             rows = []
             for line in lines:
                 if line.strip():
-                    rows.append(line.split(separator))
+                    rows.append(re.split(separator, line))
             
             if not rows:
                 return pd.DataFrame()
@@ -286,25 +290,298 @@ class PDFTableExtractor:
             # Créer le DataFrame
             return pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0] if len(normalized_rows) > 1 else None)
     
-    def process(self):
+    def process_charges_data(self, tables):
         """
-        Traite le PDF et extrait les tableaux, en utilisant d'abord l'extraction directe,
-        puis l'OCR si nécessaire.
+        Traite les tableaux extraits pour identifier et structurer les données de charges.
+        
+        Args:
+            tables (list): Liste des DataFrames pandas contenant les tableaux extraits.
+            
+        Returns:
+            DataFrame: DataFrame structuré des charges.
+        """
+        # Initialiser un DataFrame pour stocker les données de charges
+        charges_data = pd.DataFrame(columns=[
+            'Code', 'Désignation', 'Montant HT', 'Montant TVA', 'Tantièmes globaux', 
+            'Tantièmes particuliers', 'Quote-part', 'Pourcentage'
+        ])
+        
+        # Identifier les tableaux de charges
+        for i, table in enumerate(tables):
+            # Nettoyer les noms de colonnes
+            if table.columns.dtype == 'object':
+                table.columns = [str(col).strip() for col in table.columns]
+            
+            # Détecter si c'est un tableau de charges
+            charges_columns = [col for col in table.columns if 'désignation' in str(col).lower() or 
+                              'mont' in str(col).lower() or 'tva' in str(col).lower() or 
+                              'code' in str(col).lower() or 'chapitre' in str(col).lower()]
+            
+            if len(charges_columns) >= 2:
+                logger.info(f"Tableau {i+1} identifié comme tableau de charges")
+                
+                # Nettoyer et préparer le tableau
+                cleaned_table = self.clean_charges_table(table)
+                if not cleaned_table.empty:
+                    charges_data = pd.concat([charges_data, cleaned_table], ignore_index=True)
+        
+        # Si aucun tableau de charges n'a été trouvé, essayer une approche plus générique
+        if charges_data.empty and tables:
+            # Essayer de détecter des modèles dans les tableaux
+            for i, table in enumerate(tables):
+                if len(table.columns) >= 3 and len(table) > 2:
+                    # Essayer d'identifier les colonnes par leur contenu
+                    numeric_cols = []
+                    text_cols = []
+                    
+                    for col in table.columns:
+                        # Vérifier si la colonne contient principalement des valeurs numériques
+                        try:
+                            numeric_values = pd.to_numeric(table[col], errors='coerce')
+                            if numeric_values.notna().sum() / len(table) > 0.5:
+                                numeric_cols.append(col)
+                            else:
+                                text_cols.append(col)
+                        except:
+                            text_cols.append(col)
+                    
+                    if numeric_cols and text_cols:
+                        logger.info(f"Tableau {i+1} traité de manière générique")
+                        
+                        # Renommer les colonnes de manière générique
+                        renamed_table = table.copy()
+                        rename_map = {}
+                        
+                        for i, col in enumerate(text_cols):
+                            if i == 0:
+                                rename_map[col] = 'Code'
+                            elif i == 1:
+                                rename_map[col] = 'Désignation'
+                            else:
+                                rename_map[col] = f'Texte_{i}'
+                        
+                        for i, col in enumerate(numeric_cols):
+                            if i == 0:
+                                rename_map[col] = 'Montant HT'
+                            elif i == 1:
+                                rename_map[col] = 'Montant TVA'
+                            elif i == 2:
+                                rename_map[col] = 'Quote-part'
+                            else:
+                                rename_map[col] = f'Valeur_{i}'
+                        
+                        renamed_table = renamed_table.rename(columns=rename_map)
+                        charges_data = pd.concat([charges_data, renamed_table], ignore_index=True)
+        
+        # Nettoyer et formater les données
+        if not charges_data.empty:
+            # Convertir les colonnes numériques
+            numeric_columns = ['Montant HT', 'Montant TVA', 'Quote-part']
+            for col in numeric_columns:
+                if col in charges_data.columns:
+                    charges_data[col] = self.convert_to_numeric(charges_data[col])
+            
+            # Ajouter une colonne de pourcentage si possible
+            if 'Montant HT' in charges_data.columns and 'Quote-part' in charges_data.columns:
+                charges_data['Pourcentage'] = charges_data.apply(
+                    lambda row: row['Quote-part'] / row['Montant HT'] * 100 if row['Montant HT'] != 0 else 0, 
+                    axis=1
+                )
+                charges_data['Pourcentage'] = charges_data['Pourcentage'].round(2)
+        
+        return charges_data
+    
+    def clean_charges_table(self, table):
+        """
+        Nettoie et structure un tableau de charges.
+        
+        Args:
+            table (DataFrame): Tableau de charges brut.
+            
+        Returns:
+            DataFrame: Tableau de charges nettoyé et structuré.
+        """
+        try:
+            # Copie du tableau pour éviter de modifier l'original
+            df = table.copy()
+            
+            # Nettoyer les noms de colonnes
+            if df.columns.dtype == 'object':
+                column_mapping = {}
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if 'code' in col_lower or 'chapitre' in col_lower or 'clé' in col_lower:
+                        column_mapping[col] = 'Code'
+                    elif 'désignation' in col_lower or 'libellé' in col_lower or 'intitulé' in col_lower:
+                        column_mapping[col] = 'Désignation'
+                    elif 'mont' in col_lower and 'ht' in col_lower:
+                        column_mapping[col] = 'Montant HT'
+                    elif 'mont' in col_lower and 'tva' in col_lower:
+                        column_mapping[col] = 'Montant TVA'
+                    elif 'mont' in col_lower and 'ttc' in col_lower:
+                        column_mapping[col] = 'Montant TTC'
+                    elif 'tantième' in col_lower and ('globaux' in col_lower or 'total' in col_lower):
+                        column_mapping[col] = 'Tantièmes globaux'
+                    elif 'tantième' in col_lower and 'particulier' in col_lower:
+                        column_mapping[col] = 'Tantièmes particuliers'
+                    elif 'quote' in col_lower and 'part' in col_lower:
+                        column_mapping[col] = 'Quote-part'
+                    elif 'répartir' in col_lower and 'ht' in col_lower:
+                        column_mapping[col] = 'Quote-part'
+                
+                # Renommer les colonnes identifiées
+                if column_mapping:
+                    df = df.rename(columns=column_mapping)
+            
+            # Supprimer les lignes vides ou ne contenant que des NaN
+            df = df.dropna(how='all')
+            
+            # Nettoyer les valeurs numériques
+            numeric_columns = ['Montant HT', 'Montant TVA', 'Montant TTC', 'Quote-part', 
+                              'Tantièmes globaux', 'Tantièmes particuliers']
+            
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = self.convert_to_numeric(df[col])
+            
+            # Filtrer les lignes qui ne contiennent pas de données de charges valides
+            if 'Désignation' in df.columns and 'Montant HT' in df.columns:
+                df = df[df['Désignation'].notna() & df['Montant HT'].notna()]
+            
+            return df
+        
+        except Exception as e:
+            logger.error(f"Erreur lors du nettoyage du tableau de charges: {str(e)}")
+            return pd.DataFrame()
+    
+    def convert_to_numeric(self, series):
+        """
+        Convertit une série en valeurs numériques en gérant les formats spécifiques.
+        
+        Args:
+            series (Series): Série à convertir.
+            
+        Returns:
+            Series: Série convertie en numérique.
+        """
+        if series.dtype == 'object':
+            # Fonction pour nettoyer les chaînes de caractères
+            def clean_numeric_string(s):
+                if pd.isna(s):
+                    return np.nan
+                
+                if isinstance(s, (int, float)):
+                    return float(s)
+                
+                s = str(s)
+                # Supprimer les espaces, remplacer les virgules par des points
+                s = s.replace(' ', '').replace(',', '.').replace('€', '')
+                
+                # Essayer de convertir en float
+                try:
+                    return float(s)
+                except ValueError:
+                    return np.nan
+            
+            return series.apply(clean_numeric_string)
+        
+        return series
+    
+    def extract_metadata(self):
+        """
+        Extrait les métadonnées du document (société, immeuble, période, etc.).
         
         Returns:
-            list: Liste des DataFrames des tableaux extraits.
+            dict: Dictionnaire des métadonnées extraites.
         """
+        metadata = {
+            'société': None,
+            'immeuble': None,
+            'adresse': None,
+            'période': None,
+            'type_document': None
+        }
+        
+        try:
+            # Sauvegarder le fichier temporairement
+            temp_pdf_path = os.path.join(self.temp_dir, "temp.pdf")
+            with open(temp_pdf_path, 'wb') as f:
+                f.write(self.pdf_file.getvalue())
+            
+            # Extraire le texte de la première page
+            images = pdf2image.convert_from_path(temp_pdf_path, first_page=1, last_page=1)
+            if images:
+                img_path = os.path.join(self.temp_dir, "first_page.png")
+                images[0].save(img_path, 'PNG')
+                
+                # OCR sur la première page
+                text = pytesseract.image_to_string(Image.open(img_path), lang='fra')
+                
+                # Extraire les métadonnées avec des expressions régulières
+                # Société
+                societe_match = re.search(r'Société\s*:?\s*([A-Z0-9 ]+)', text, re.IGNORECASE)
+                if societe_match:
+                    metadata['société'] = societe_match.group(1).strip()
+                
+                # Immeuble
+                immeuble_match = re.search(r'Immeuble\s*:?\s*([A-Z0-9 ]+)', text, re.IGNORECASE)
+                if immeuble_match:
+                    metadata['immeuble'] = immeuble_match.group(1).strip()
+                
+                # Adresse (recherche du code postal et ville)
+                adresse_match = re.search(r'\b(\d{5})\s+([A-Z]+)\b', text)
+                if adresse_match:
+                    # Rechercher une ligne d'adresse autour du code postal
+                    cp_index = text.find(adresse_match.group(0))
+                    line_start = text.rfind('\n', 0, cp_index) + 1
+                    line_end = text.find('\n', cp_index)
+                    
+                    if line_start > 0 and line_end > cp_index:
+                        metadata['adresse'] = text[line_start:line_end].strip()
+                
+                # Période
+                periode_match = re.search(r'[Pp]ériode\s+du\s+(\d{2}/\d{2}/\d{4})\s+au\s+(\d{2}/\d{2}/\d{4})', text)
+                if periode_match:
+                    metadata['période'] = f"{periode_match.group(1)} au {periode_match.group(2)}"
+                
+                # Type de document
+                if 'RELEVE GENERAL DE DEPENSES' in text:
+                    metadata['type_document'] = 'Relevé général de dépenses'
+                elif 'RELEVE INDIVIDUEL DES CHARGES' in text:
+                    metadata['type_document'] = 'Relevé individuel des charges locatives'
+                elif 'FACTURE' in text:
+                    metadata['type_document'] = 'Facture'
+        
+        except Exception as e:
+            logger.error(f"Erreur lors de l'extraction des métadonnées: {str(e)}")
+        
+        return metadata
+    
+    def process(self):
+        """
+        Traite le PDF et extrait les tableaux et les données de charges.
+        
+        Returns:
+            tuple: (DataFrame des charges, dict des métadonnées)
+        """
+        # Extraire les métadonnées
+        metadata = self.extract_metadata()
+        
         # Tenter l'extraction directe
         tables = self.extract_tables_direct()
         
         # Si aucun tableau n'est trouvé, essayer l'OCR
         if not tables:
+            logger.info("Aucun tableau trouvé par extraction directe. Tentative par OCR...")
             tables = self.extract_tables_ocr()
+        
+        # Traiter les tableaux pour en extraire les données de charges
+        charges_data = self.process_charges_data(tables)
         
         # Nettoyer les fichiers temporaires
         self.cleanup()
         
-        return tables
+        return charges_data, metadata
     
     def cleanup(self):
         """Nettoie les fichiers temporaires."""
@@ -329,14 +606,14 @@ def get_table_download_link(df, filename, format_type):
         str: HTML pour le lien de téléchargement.
     """
     if format_type == 'csv':
-        csv = df.to_csv(index=False)
+        csv = df.to_csv(index=False, sep=';')
         b64 = base64.b64encode(csv.encode()).decode()
         mime_type = 'text/csv'
         file_extension = 'csv'
     elif format_type == 'xlsx':
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Tableau', index=False)
+            df.to_excel(writer, sheet_name='Charges', index=False)
         b64 = base64.b64encode(output.getvalue()).decode()
         mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         file_extension = 'xlsx'
@@ -348,30 +625,67 @@ def get_table_download_link(df, filename, format_type):
     else:
         return ""
 
-    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{file_extension}">Télécharger {filename}.{file_extension}</a>'
+    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{file_extension}" class="download-link">Télécharger {filename}.{file_extension}</a>'
     return href
 
 
 def main():
-    st.title("Extracteur de Tableaux PDF")
+    st.title("Extracteur de Relevés de Charges")
     st.markdown("""
-    Cette application vous permet d'extraire des tableaux à partir de fichiers PDF, 
-    même lorsque ces tableaux sont sous forme d'images. L'application utilise deux approches:
+    Cette application vous permet d'extraire automatiquement les données de charges à partir de relevés PDF de copropriété
+    ou de charges locatives, structurant les informations dans un format analysable pour validation des clauses contractuelles de bail.
     
-    1. **Extraction directe** pour les PDF contenant des tableaux structurés
-    2. **Extraction par OCR** pour les PDF contenant des tableaux sous forme d'images
+    #### Fonctionnalités :
+    - Extraction des tableaux de charges depuis les PDFs (même basés sur des images)
+    - Identification automatique des différentes charges et quotes-parts
+    - Structuration des données pour analyse comparative
+    - Export en CSV, Excel ou JSON pour analyse approfondie
+    - Visualisation graphique des principales charges
     """)
+    
+    # CSS personnalisé
+    st.markdown("""
+    <style>
+        .download-link {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .metadata-box {
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .charges-info {
+            font-size: 18px;
+            font-weight: bold;
+            margin: 15px 0;
+        }
+        .highlight-row {
+            background-color: #e6f7ff;
+        }
+    </style>
+    """, unsafe_allow_html=True)
     
     # Sidebar
     st.sidebar.title("Options")
     output_format = st.sidebar.selectbox(
-        "Format de sortie",
+        "Format de téléchargement",
         options=["csv", "xlsx", "json"],
         index=0
     )
     
-    # Téléchargement de fichier
-    uploaded_file = st.file_uploader("Choisissez un fichier PDF", type=['pdf'])
+    # Zone de téléchargement de fichier principal
+    uploaded_file = st.file_uploader("Choisissez un relevé de charges au format PDF", type=['pdf'])
     
     if uploaded_file is not None:
         # Afficher les informations du fichier
@@ -384,50 +698,66 @@ def main():
             st.write(f"{key}: {value}")
         
         # Bouton pour lancer l'extraction
-        if st.button("Extraire les tableaux"):
+        if st.button("Extraire les données de charges"):
             with st.spinner('Extraction en cours... Cela peut prendre quelques minutes.'):
                 try:
                     # Initialiser l'extracteur
-                    extractor = PDFTableExtractor(uploaded_file, output_format)
+                    extractor = PDFChargesExtractor(uploaded_file)
                     
-                    # Extraire les tableaux
-                    tables = extractor.process()
+                    # Extraire les données de charges
+                    charges_data, metadata = extractor.process()
                     
-                    if tables and len(tables) > 0:
-                        st.success(f"{len(tables)} tableaux ont été extraits avec succès!")
+                    if not charges_data.empty:
+                        # Afficher les métadonnées extraites
+                        st.subheader("Informations du document")
+                        metadata_html = "<div class='metadata-box'>"
+                        for key, value in metadata.items():
+                            if value:
+                                metadata_html += f"<p><strong>{key.capitalize()}:</strong> {value}</p>"
+                        metadata_html += "</div>"
+                        st.markdown(metadata_html, unsafe_allow_html=True)
                         
-                        # Afficher et permettre le téléchargement de chaque tableau
-                        for i, table in enumerate(tables):
-                            if not table.empty:
-                                st.subheader(f"Tableau {i+1}")
+                        # Afficher les statistiques des charges
+                        if 'Montant HT' in charges_data.columns and 'Quote-part' in charges_data.columns:
+                            total_ht = charges_data['Montant HT'].sum()
+                            total_quote_part = charges_data['Quote-part'].sum()
+                            pourcentage_moyen = total_quote_part / total_ht * 100 if total_ht > 0 else 0
+                            
+                            st.markdown(f"<p class='charges-info'>Total des charges: {total_ht:.2f} € HT</p>", unsafe_allow_html=True)
+                            st.markdown(f"<p class='charges-info'>Total quote-part: {total_quote_part:.2f} € HT</p>", unsafe_allow_html=True)
+                            st.markdown(f"<p class='charges-info'>Pourcentage moyen: {pourcentage_moyen:.2f}%</p>", unsafe_allow_html=True)
+                        
+                        # Afficher le tableau des charges
+                        st.subheader("Détail des charges")
+                        st.dataframe(charges_data)
+                        
+                        # Lien de téléchargement
+                        st.subheader("Télécharger les données")
+                        file_base_name = uploaded_file.name.split('.')[0]
+                        download_link = get_table_download_link(charges_data, f"{file_base_name}_charges", output_format)
+                        st.markdown(download_link, unsafe_allow_html=True)
+                        
+                        # Analyse graphique si possible
+                        if 'Désignation' in charges_data.columns and 'Quote-part' in charges_data.columns:
+                            st.subheader("Analyse graphique")
+                            
+                            # Préparation des données pour le graphique
+                            chart_data = charges_data.dropna(subset=['Désignation', 'Quote-part'])
+                            if len(chart_data) > 0:
+                                # Limiter aux 10 charges les plus importantes
+                                chart_data = chart_data.sort_values('Quote-part', ascending=False).head(10)
                                 
-                                # Afficher le tableau
-                                st.dataframe(table)
+                                # Créer un graphique à barres
+                                st.bar_chart(chart_data.set_index('Désignation')['Quote-part'])
                                 
-                                # Lien de téléchargement
-                                table_filename = f"{uploaded_file.name.split('.')[0]}_table_{i+1}"
-                                download_link = get_table_download_link(table, table_filename, output_format)
-                                st.markdown(download_link, unsafe_allow_html=True)
+                                # Afficher la répartition en camembert
+                                fig, ax = plt.subplots(figsize=(10, 5))
+                                chart_data['Quote-part'].plot(kind='pie', autopct='%1.1f%%', labels=chart_data['Désignation'], ax=ax)
+                                ax.set_title('Répartition des principales charges')
+                                ax.set_ylabel('')
+                                st.pyplot(fig)
                     else:
-                        st.warning("Aucun tableau n'a pu être extrait du document.")
+                        st.error("Aucune donnée de charges n'a pu être extraite du document. Veuillez vérifier que le PDF contient des tableaux de charges structurés.")
                 
                 except Exception as e:
-                    st.error(f"Une erreur s'est produite: {str(e)}")
-    
-    # Informations supplémentaires
-    st.markdown("---")
-    st.subheader("Comment ça marche?")
-    st.markdown("""
-    1. **Téléchargez** un fichier PDF contenant des tableaux
-    2. Cliquez sur **Extraire les tableaux** pour lancer le processus
-    3. Visualisez les tableaux extraits et **téléchargez-les** dans le format de votre choix
-    
-    L'application tente d'abord une extraction directe des tableaux. Si cela échoue, elle utilise l'OCR 
-    (reconnaissance optique de caractères) pour extraire le texte des images de tableaux.
-    
-    **Note:** La qualité de l'extraction dépend fortement de la qualité du PDF et de la structure des tableaux.
-    """)
-
-
-if __name__ == "__main__":
-    main()
+                    st.error(f"Une erreur s'est produite lors de l'extraction: {str(e)}")
