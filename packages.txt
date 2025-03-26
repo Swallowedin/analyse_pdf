@@ -1,7 +1,4 @@
 tesseract-ocr
 tesseract-ocr-fra
 poppler-utils
-rich>=10.0.0
-markdown-it-py>=2.0.0
-pygments>=2.10.0
-mdurl>=0.1.0
+
