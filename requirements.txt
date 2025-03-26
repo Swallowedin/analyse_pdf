@@ -6,3 +6,7 @@ pytesseract>=0.3.8
 pdf2image>=1.16.0
 matplotlib>=3.5.0
 seaborn>=0.11.0
+rich>=10.0.0
+markdown-it-py>=2.0.0
+pygments>=2.10.0
+mdurl>=0.1.0
