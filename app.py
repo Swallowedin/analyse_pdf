@@ -426,8 +426,8 @@ if app_mode == "Analyser un document":
                             st.markdown("---")
                         
                         
-                        st.markdown("    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p>")
-    </div>
+                        st.markdown("    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p></div>", unsafe_allow_html=True)
+                    
     
     # Ajouter un espace pour les informations de déploiement
     st.markdown("---")
