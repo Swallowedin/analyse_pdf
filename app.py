@@ -1,1142 +1,686 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import cv2
-import pytesseract
-from PIL import Image
-import pdf2image
-import tabula
-import tempfile
+import json
 import os
-import base64
+import tempfile
 import io
+import base64
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_bytes
 import re
 import matplotlib.pyplot as plt
-from concurrent.futures import ThreadPoolExecutor
+import seaborn as sns
+from datetime import datetime
 
-# Configuration de la page Streamlit
+# Configuration de la page
 st.set_page_config(
-    page_title="Extracteur Intelligent de Charges",
+    page_title="Analyseur de Charges Locatives Commerciales",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-class SmartChargesExtractor:
-    """
-    Extracteur intelligent de charges utilisant des techniques d'IA
-    pour optimiser l'extraction et l'analyse des données.
-    """
+# Styles CSS personnalisés
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E88E5;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #424242;
+        margin-bottom: 1rem;
+    }
+    .success-box {
+        background-color: #E8F5E9;
+        padding: 1rem;
+        border-radius: 5px;
+        border-left: 5px solid #4CAF50;
+    }
+    .info-box {
+        background-color: #E3F2FD;
+        padding: 1rem;
+        border-radius: 5px;
+        border-left: 5px solid #2196F3;
+    }
+    .warning-box {
+        background-color: #FFF8E1;
+        padding: 1rem;
+        border-radius: 5px;
+        border-left: 5px solid #FFC107;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Titre de l'application
+st.markdown("<h1 class='main-header'>Analyseur de Charges Locatives Commerciales</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center;'>Une solution basée sur l'IA pour l'analyse et la structuration de vos documents de charges</p>", unsafe_allow_html=True)
+
+# Fonction pour extraire le texte d'un PDF via OCR
+def extract_text_from_pdf(pdf_file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+        temp_pdf.write(pdf_file.read())
+        temp_pdf_path = temp_pdf.name
     
-    def __init__(self, pdf_file):
-        """Initialise l'extracteur avec le fichier PDF"""
-        self.pdf_file = pdf_file
-        self.temp_dir = tempfile.mkdtemp()
-        self.document_type = None
-        self.document_structure = None
+    try:
+        # Convertir les pages du PDF en images
+        images = convert_from_bytes(open(temp_pdf_path, 'rb').read())
         
-    def analyze_document_structure(self):
-        """Détermine le type et la structure du document"""
-        # Sauvegarder temporairement le PDF
-        temp_pdf_path = os.path.join(self.temp_dir, "temp.pdf")
-        with open(temp_pdf_path, 'wb') as f:
-            f.write(self.pdf_file.getvalue())
-            
-        # Extraire le texte de la première page pour analyse
-        images = pdf2image.convert_from_path(temp_pdf_path, first_page=1, last_page=1)
-        if not images:
-            return None
-            
-        img_path = os.path.join(self.temp_dir, "first_page.png")
-        images[0].save(img_path, 'PNG')
+        # Extraire le texte de chaque page
+        text = ""
+        for i, image in enumerate(images):
+            text += f"\n--- PAGE {i+1} ---\n"
+            text += pytesseract.image_to_string(image, lang='fra')
         
-        text = pytesseract.image_to_string(Image.open(img_path), lang='fra')
+        return text
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte: {e}")
+        return None
+    finally:
+        # Nettoyer le fichier temporaire
+        if os.path.exists(temp_pdf_path):
+            os.unlink(temp_pdf_path)
+
+# Fonction pour classifier le type de document
+def classify_document(text):
+    if re.search(r"ANALYSE\s+DES\s+CHARGES\s+LOCATIVES\s+COMMERCIALES|Analyse\s+de\s+conformité", text, re.IGNORECASE):
+        return "rapport_analyse"
+    
+    if re.search(r"RELEVE\s+INDIVIDUEL\s+DES\s+CHARGES\s+LOCATIVES", text, re.IGNORECASE):
+        return "releve_individuel"
+    
+    if re.search(r"RELEVE\s+GENERAL\s+DE\s+DEPENSES", text, re.IGNORECASE):
+        return "releve_general"
+    
+    if re.search(r"AVOIR|FACTURE", text, re.IGNORECASE):
+        return "facture"
+    
+    return "document_inconnu"
+
+# Fonction pour extraire les données d'un rapport d'analyse
+def extract_rapport_analyse(text):
+    data = {
+        "type_document": "Rapport d'analyse des charges",
+        "date_extraction": datetime.now().isoformat(),
+        "metadata": {},
+        "donnees": {
+            "informations_generales": {},
+            "charges": [],
+            "charges_contestables": [],
+            "recommandations": []
+        }
+    }
+    
+    # Extraire les métadonnées de base
+    date_match = re.search(r"Rapport généré le (\d{2}/\d{2}/\d{4})", text)
+    if date_match:
+        data["metadata"]["date_rapport"] = date_match.group(1)
+    
+    type_bail_match = re.search(r"Type de bail\s+(\w+)", text)
+    if type_bail_match:
+        data["metadata"]["type_bail"] = type_bail_match.group(1)
+        data["donnees"]["informations_generales"]["type_bail"] = type_bail_match.group(1)
+    
+    montant_match = re.search(r"Montant total des charges\s+(\d+[.,]\d{2}€)", text)
+    if montant_match:
+        data["metadata"]["montant_total"] = montant_match.group(1)
+        data["donnees"]["informations_generales"]["montant_total"] = montant_match.group(1)
+    
+    taux_match = re.search(r"Taux de conformité\s+(\d+%)", text)
+    if taux_match:
+        data["metadata"]["taux_conformite"] = taux_match.group(1)
+        data["donnees"]["informations_generales"]["taux_conformite"] = taux_match.group(1)
+    
+    # Extraire les charges
+    charges_section = re.search(r"Analyse des charges facturées([\s\S]*?)Charges potentiellement contestables", text)
+    if charges_section:
+        charges_text = charges_section.group(1)
+        charge_pattern = r"([^\n]+)\s+(\d+\.\d+)\s+(\d+\.\d+%)\s+(\w+)\s+(\w+)"
+        for match in re.finditer(charge_pattern, charges_text):
+            charge = {
+                "poste": match.group(1).strip(),
+                "montant": float(match.group(2)),
+                "pourcentage": match.group(3),
+                "conformite": match.group(4),
+                "contestable": match.group(5) == "Oui"
+            }
+            data["donnees"]["charges"].append(charge)
+    
+    # Extraire les charges contestables
+    contestable_section = re.search(r"Charges potentiellement contestables([\s\S]*?)Recommandations", text)
+    if contestable_section:
+        contestable_text = contestable_section.group(1)
+        contestable_pattern = r"([^\n]+)\s*\((\d+\.\d+)€\)([\s\S]*?)Raison:\s*([^\n]*)([\s\S]*?)Justification:\s*([^\n]*)"
+        for match in re.finditer(contestable_pattern, contestable_text):
+            contestable = {
+                "poste": match.group(1).strip(),
+                "montant": float(match.group(2)),
+                "raison": match.group(4).strip(),
+                "justification": match.group(6).strip()
+            }
+            data["donnees"]["charges_contestables"].append(contestable)
+    
+    # Extraire les recommandations
+    recommandations_section = re.search(r"Recommandations([\s\S]*?)Ce rapport a été généré", text)
+    if recommandations_section:
+        recommandations_text = recommandations_section.group(1)
+        for line in recommandations_text.split('\n'):
+            if line.strip() and re.match(r"\d+\.", line.strip()):
+                data["donnees"]["recommandations"].append(re.sub(r"^\d+\.\s+", "", line.strip()))
+    
+    return data
+
+# Fonction pour extraire les données d'un relevé individuel
+def extract_releve_individuel(text):
+    data = {
+        "type_document": "Relevé individuel des charges locatives",
+        "date_extraction": datetime.now().isoformat(),
+        "metadata": {},
+        "donnees": {
+            "informations": {},
+            "charges": [],
+            "totaux": {}
+        }
+    }
+    
+    # Extraire les métadonnées de base
+    periode_match = re.search(r"Période du (\d{2}/\d{2}/\d{4}) au (\d{2}/\d{2}/\d{4})", text)
+    if periode_match:
+        data["metadata"]["periode"] = f"{periode_match.group(1)} au {periode_match.group(2)}"
+        data["donnees"]["informations"]["periode"] = f"{periode_match.group(1)} au {periode_match.group(2)}"
+    
+    societe_match = re.search(r"SCI PASTEUR", text)
+    if societe_match:
+        data["metadata"]["societe"] = "SCI PASTEUR"
+    
+    locataire_match = re.search(r"ELECTRO DEPOT FRANCE\s*\n\s*([^0-9]*)", text)
+    if locataire_match:
+        data["donnees"]["informations"]["locataire"] = "ELECTRO DEPOT FRANCE"
+    
+    bail_match = re.search(r"Bail : \d+ - Type : ([^\n]*)", text)
+    if bail_match:
+        data["donnees"]["informations"]["bail"] = bail_match.group(1).strip()
+    
+    # Extraire les charges
+    charges_pattern = r"(\d{2})\s+([^\n]+)\s+(\d+[ \d]*,\d+)\s+(\d+)\s+(\d+,\d+)\s+(\d+)\s+(\d+[ \d]*,\d+)"
+    for match in re.finditer(charges_pattern, text):
+        charge = {
+            "code": match.group(1),
+            "designation": match.group(2).strip(),
+            "montant": float(match.group(3).replace(" ", "").replace(",", ".")),
+            "tantieme_global": int(match.group(4)),
+            "tantieme_particulier": float(match.group(5).replace(",", ".")),
+            "jours": int(match.group(6)),
+            "quote_part": float(match.group(7).replace(" ", "").replace(",", "."))
+        }
+        data["donnees"]["charges"].append(charge)
+    
+    # Extraire les totaux
+    total_charges_match = re.search(r"Total charges\s+(\d+[ \d]*,\d+)", text)
+    if total_charges_match:
+        data["donnees"]["totaux"]["total_charges"] = float(total_charges_match.group(1).replace(" ", "").replace(",", "."))
+    
+    provisions_match = re.search(r"Provisions\s+(-\d+[ \d]*,\d+)", text)
+    if provisions_match:
+        data["donnees"]["totaux"]["provisions"] = float(provisions_match.group(1).replace(" ", "").replace(",", "."))
+    
+    solde_match = re.search(r"Solde\s+(-?\d+[ \d]*,\d+)", text)
+    if solde_match:
+        data["donnees"]["totaux"]["solde"] = float(solde_match.group(1).replace(" ", "").replace(",", "."))
+    
+    return data
+
+# Fonction pour extraire les données d'un relevé général
+def extract_releve_general(text):
+    data = {
+        "type_document": "Relevé général de dépenses",
+        "date_extraction": datetime.now().isoformat(),
+        "metadata": {},
+        "donnees": {
+            "informations": {},
+            "chapitres_charges": [],
+            "total": None
+        }
+    }
+    
+    # Extraire les métadonnées de base
+    periode_match = re.search(r"Période du (\d{2}/\d{2}/\d{4}) au (\d{2}/\d{2}/\d{4})", text)
+    if periode_match:
+        data["metadata"]["periode"] = f"{periode_match.group(1)} au {periode_match.group(2)}"
+        data["donnees"]["informations"]["periode"] = f"{periode_match.group(1)} au {periode_match.group(2)}"
+    
+    societe_match = re.search(r"Société : (\d+)\s+([^\n]+)", text)
+    if societe_match:
+        data["metadata"]["societe"] = f"{societe_match.group(1)} {societe_match.group(2).strip()}"
+    
+    immeuble_match = re.search(r"Immeuble : (\d+)\s+([^\n]+)", text)
+    if immeuble_match:
+        data["donnees"]["informations"]["immeuble"] = f"{immeuble_match.group(1)} {immeuble_match.group(2).strip()}"
+    
+    # Extraire les chapitres de charges
+    chapitre_pattern = r"Chap\.\s+(\d+)\s+([^\n]+)"
+    for match in re.finditer(chapitre_pattern, text):
+        chapitre = {
+            "numero": match.group(1),
+            "designation": match.group(2).strip(),
+            "details": []
+        }
         
-        # Identifier le type de document
-        if 'RELEVE GENERAL DE DEPENSES' in text:
-            self.document_type = 'releve_general'
-        elif 'RELEVE INDIVIDUEL DES CHARGES' in text:
-            self.document_type = 'releve_individuel'
-        elif 'CHARGES LOCATIVES' in text:
-            self.document_type = 'charges_locatives'
-        else:
-            self.document_type = 'generic'
-            
-        # Analyser la structure des tableaux
-        # Cette fonction identifie les positions probables des tableaux
-        # et leur structure pour optimiser l'extraction
-        img = cv2.imread(img_path)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+        # Extraire les détails de chaque chapitre
+        chapitre_text = re.search(f"Chap\\.\\s+{chapitre['numero']}\\s+{chapitre['designation']}([\\s\\S]*?)(?:Total Chap\\.\\s+{chapitre['numero']}|Chap\\.\\s+\\d+)", text)
+        if chapitre_text:
+            detail_pattern = r"([^\n]+)\s+(\d{2}/\d{2}/\d{4})\s+(\d+[ \d]*,\d+)\s+(\d+,\d+)\s+(\d+,\d+)"
+            for detail_match in re.finditer(detail_pattern, chapitre_text.group(1)):
+                detail = {
+                    "designation": detail_match.group(1).strip(),
+                    "date": detail_match.group(2),
+                    "montant_ht": float(detail_match.group(3).replace(" ", "").replace(",", ".")),
+                    "montant_tva": float(detail_match.group(4).replace(",", ".")),
+                    "repartition": detail_match.group(5)
+                }
+                chapitre["details"].append(detail)
         
-        # Détection des lignes horizontales et verticales
-        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-        
-        horizontal_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
-        vertical_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
-        
-        # Déterminer si le document a une structure tabulaire claire
-        table_mask = horizontal_lines + vertical_lines
-        contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if len(contours) > 0:
-            self.document_structure = 'tabular'
-        else:
-            # Tenter une autre approche pour détecter des structures tabulaires moins évidentes
-            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-            lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=100, minLineLength=100, maxLineGap=10)
-            
-            if lines is not None and len(lines) > 10:
-                self.document_structure = 'semi_tabular'
-            else:
-                self.document_structure = 'unstructured'
-        
-        return {
-            'type': self.document_type,
-            'structure': self.document_structure
+        data["donnees"]["chapitres_charges"].append(chapitre)
+    
+    # Extraire le total général
+    total_match = re.search(r"Total clé 01\s+CHARGES COMMUNES\s+(\d+[ \d]*,\d+)", text)
+    if total_match:
+        data["donnees"]["total"] = float(total_match.group(1).replace(" ", "").replace(",", "."))
+    
+    return data
+
+# Fonction principale pour analyser un document
+def analyze_document(file_content, file_name):
+    # Extraire le texte du document
+    text = extract_text_from_pdf(file_content)
+    
+    if not text:
+        return {"error": "Impossible d'extraire le texte du document"}
+    
+    # Classifier le type de document
+    doc_type = classify_document(text)
+    
+    # Extraire les données selon le type de document
+    if doc_type == "rapport_analyse":
+        result = extract_rapport_analyse(text)
+    elif doc_type == "releve_individuel":
+        result = extract_releve_individuel(text)
+    elif doc_type == "releve_general":
+        result = extract_releve_general(text)
+    else:
+        result = {
+            "type_document": "Document inconnu",
+            "texte_extrait": text[:1000] + "..." if len(text) > 1000 else text
         }
     
-    def extract_optimized(self):
-        """Extraction optimisée en fonction du type et de la structure du document"""
-        # Analyser la structure si ce n'est pas déjà fait
-        if not self.document_type or not self.document_structure:
-            self.analyze_document_structure()
-        
-        # Stratégie d'extraction basée sur la structure identifiée
-        if self.document_structure == 'tabular':
-            # Utiliser une approche basée sur tabula pour les documents bien structurés
-            return self.extract_tabular()
-        elif self.document_structure == 'semi_tabular':
-            # Approche hybride pour documents semi-structurés
-            return self.extract_hybrid()
-        else:
-            # Approche basée sur OCR pour documents non structurés
-            return self.extract_unstructured()
+    # Ajouter des informations sur le document source
+    result["source"] = {
+        "nom_fichier": file_name,
+        "taille_fichier": len(file_content.getvalue())
+    }
     
-    def extract_tabular(self):
-        """Extraction pour documents avec structure tabulaire claire"""
-        temp_pdf_path = os.path.join(self.temp_dir, "temp.pdf")
-        with open(temp_pdf_path, 'wb') as f:
-            f.write(self.pdf_file.getvalue())
-        
-        # Optimiser les paramètres de tabula en fonction du type de document
-        if self.document_type == 'releve_general':
-            tables = tabula.read_pdf(
-                temp_pdf_path,
-                pages='all',
-                multiple_tables=True,
-                lattice=True,
-                guess=False
-            )
-        else:
-            tables = tabula.read_pdf(
-                temp_pdf_path,
-                pages='all',
-                multiple_tables=True,
-                stream=True,
-                guess=True
-            )
-        
-        return self.process_tables(tables)
+    return result
+
+# Fonction pour créer un tableau de comparaison des charges
+def create_comparison_chart(data_list):
+    if len(data_list) < 2:
+        st.warning("Il faut au moins deux documents pour effectuer une comparaison")
+        return None
     
-    def extract_hybrid(self):
-        """Approche hybride combinant tabula et OCR ciblé"""
-        # Extraire d'abord avec tabula
-        tables_from_tabula = self.extract_tabular()
+    # Préparer les données pour la comparaison
+    comparison_data = []
+    
+    for data in data_list:
+        period = data.get("metadata", {}).get("periode", "Période inconnue")
         
-        # Si les résultats sont insuffisants, compléter avec OCR ciblé
-        if not tables_from_tabula or self.is_extraction_incomplete(tables_from_tabula):
-            # Convertir les pages en images
-            temp_pdf_path = os.path.join(self.temp_dir, "temp.pdf")
-            with open(temp_pdf_path, 'wb') as f:
-                f.write(self.pdf_file.getvalue())
+        if "donnees" in data and "charges" in data["donnees"]:
+            for charge in data["donnees"]["charges"]:
+                comparison_data.append({
+                    "Période": period,
+                    "Poste": charge.get("designation", charge.get("poste", "Inconnu")),
+                    "Montant": charge.get("montant", 0)
+                })
+    
+    if comparison_data:
+        df = pd.DataFrame(comparison_data)
+        return df
+    else:
+        return None
+
+# Interface utilisateur Streamlit
+st.sidebar.header("Options")
+app_mode = st.sidebar.selectbox("Mode", ["Analyser un document", "Comparer des documents", "À propos"])
+
+# Conserver les données analysées en session
+if "analyzed_documents" not in st.session_state:
+    st.session_state.analyzed_documents = []
+
+# Mode d'analyse de document
+if app_mode == "Analyser un document":
+    st.markdown("<h2 class='sub-header'>Analyser un document</h2>", unsafe_allow_html=True)
+    
+    uploaded_file = st.file_uploader("Choisissez un fichier PDF", type="pdf")
+    
+    if uploaded_file is not None:
+        with st.spinner("Analyse du document en cours..."):
+            # Réinitialiser le pointeur de fichier
+            uploaded_file.seek(0)
+            
+            # Analyser le document
+            result = analyze_document(uploaded_file, uploaded_file.name)
+            
+            # Ajouter le résultat à la session
+            if "error" not in result:
+                if result not in st.session_state.analyzed_documents:
+                    st.session_state.analyzed_documents.append(result)
+            
+            # Afficher les résultats
+            if "error" in result:
+                st.error(result["error"])
+            else:
+                st.success(f"Document analysé avec succès: {result['type_document']}")
                 
-            images = pdf2image.convert_from_path(temp_pdf_path)
-            tables_from_ocr = []
-            
-            # Utiliser le multithreading pour accélérer l'OCR
-            with ThreadPoolExecutor() as executor:
-                futures = []
-                for i, img in enumerate(images):
-                    img_path = os.path.join(self.temp_dir, f"page_{i+1}.png")
-                    img.save(img_path, 'PNG')
-                    futures.append(executor.submit(self.extract_table_from_image, img_path, i+1))
+                # Afficher les informations générales
+                st.markdown("<h3>Informations générales</h3>", unsafe_allow_html=True)
                 
-                for future in futures:
-                    result = future.result()
-                    if result:
-                        tables_from_ocr.extend(result)
-            
-            # Fusionner et nettoyer les résultats
-            return self.merge_and_clean_tables(tables_from_tabula, tables_from_ocr)
-        
-        return tables_from_tabula
-    
-    def extract_unstructured(self):
-        """Extraction pour documents sans structure tabulaire claire"""
-        temp_pdf_path = os.path.join(self.temp_dir, "temp.pdf")
-        with open(temp_pdf_path, 'wb') as f:
-            f.write(self.pdf_file.getvalue())
-            
-        images = pdf2image.convert_from_path(temp_pdf_path)
-        all_tables = []
-        
-        for i, img in enumerate(images):
-            img_path = os.path.join(self.temp_dir, f"page_{i+1}.png")
-            img.save(img_path, 'PNG')
-            
-            # OCR avec configuration optimisée
-            custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-            text = pytesseract.image_to_string(Image.open(img_path), config=custom_config, lang='fra')
-            
-            # Utiliser l'IA pour reconstruire la structure tabulaire à partir du texte
-            tables = self.reconstruct_tables_from_text(text)
-            if tables:
-                all_tables.extend(tables)
-        
-        return all_tables
-    
-    def extract_table_from_image(self, img_path, page_num):
-        """Extrait les tableaux d'une image avec une approche optimisée"""
-        try:
-            # Charger et préparer l'image
-            img = cv2.imread(img_path)
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
-            # Amélioration adaptative du contraste pour une meilleure détection
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            enhanced = clahe.apply(gray)
-            
-            # Binarisation adaptative
-            binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                           cv2.THRESH_BINARY_INV, 11, 2)
-            
-            # Détection des lignes
-            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-            vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-            
-            horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
-            vertical_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
-            
-            # Combinaison des lignes
-            table_mask = horizontal_lines + vertical_lines
-            
-            # Dilatation pour connecter les composants proches
-            kernel = np.ones((3,3), np.uint8)
-            table_mask = cv2.dilate(table_mask, kernel, iterations=1)
-            
-            # Trouver les contours des tableaux
-            contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            tables = []
-            
-            for i, contour in enumerate(contours):
-                x, y, w, h = cv2.boundingRect(contour)
+                col1, col2 = st.columns(2)
+                with col1:
+                    if "metadata" in result:
+                        for key, value in result["metadata"].items():
+                            st.write(f"**{key}:** {value}")
                 
-                # Filtrer les petits contours
-                if w < 100 or h < 100:
-                    continue
+                # Afficher les données structurées selon le type de document
+                if result["type_document"] == "Rapport d'analyse des charges":
+                    # Afficher les charges
+                    if "charges" in result["donnees"]:
+                        st.markdown("<h3>Charges analysées</h3>", unsafe_allow_html=True)
+                        charges_df = pd.DataFrame(result["donnees"]["charges"])
+                        st.dataframe(charges_df)
+                        
+                        # Visualisation des charges
+                        if not charges_df.empty:
+                            st.markdown("<h3>Répartition des charges</h3>", unsafe_allow_html=True)
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            charges_df.plot.pie(
+                                y='montant', 
+                                labels=charges_df['poste'], 
+                                autopct='%1.1f%%', 
+                                ax=ax
+                            )
+                            st.pyplot(fig)
                     
-                # Extraire et traiter la région
-                table_roi = img[y:y+h, x:x+w]
-                temp_table_path = os.path.join(self.temp_dir, f"table_p{page_num}_t{i+1}.png")
-                cv2.imwrite(temp_table_path, table_roi)
+                    # Afficher les charges contestables
+                    if "charges_contestables" in result["donnees"] and result["donnees"]["charges_contestables"]:
+                        st.markdown("<h3>Charges potentiellement contestables</h3>", unsafe_allow_html=True)
+                        st.markdown("<div class='warning-box'>", unsafe_allow_html=True)
+                        
+                        for charge in result["donnees"]["charges_contestables"]:
+                            st.markdown(f"**{charge['poste']} ({charge['montant']}€)**", unsafe_allow_html=True)
+                            st.markdown(f"Raison: {charge['raison']}", unsafe_allow_html=True)
+                            st.markdown(f"Justification: {charge['justification']}", unsafe_allow_html=True)
+                            st.markdown("---")
+                        
+                        st.markdown("    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p>
+    </div>
+    
+    # Ajouter un espace pour les informations de déploiement
+    st.markdown("---")
+    st.markdown("### Déploiement sur Streamlit Cloud")
+    
+    with st.expander("Instructions de déploiement"):
+        st.markdown("""
+        Pour déployer cette application sur Streamlit Cloud :
+        
+        1. **Préparez votre environnement GitHub** :
+           - Créez un nouveau dépôt GitHub
+           - Téléchargez ce script et nommez-le `app.py`
+           - Créez un fichier `requirements.txt` avec les dépendances suivantes :
+        
+        ```
+        streamlit==1.27.0
+        pandas==2.0.3
+        numpy==1.24.3
+        pillow==9.5.0
+        pytesseract==0.3.10
+        pdf2image==1.16.3
+        matplotlib==3.7.2
+        seaborn==0.12.2
+        ```
+        
+        2. **Configurations supplémentaires** :
+           - Pour l'OCR, ajoutez également les dépendances système dans un fichier `packages.txt` :
+        
+        ```
+        tesseract-ocr
+        tesseract-ocr-fra
+        poppler-utils
+        ```
+        
+        3. **Déploiement** :
+           - Connectez-vous à [Streamlit Cloud](https://streamlit.io/cloud)
+           - Créez une nouvelle application en pointant vers votre dépôt GitHub
+           - Configurez les paramètres de déploiement en précisant que vous avez des dépendances système
+           - Déployez l'application
+        """)
+    
+    st.markdown("---")
+    st.markdown("""
+    <p style="text-align: center; color: #888;">
+    © 2025 Analyseur de Charges Locatives Commerciales<br>
+    Version de démonstration 1.0.0
+    </p>
+    """, unsafe_allow_html=True)
+
+# Exécuter l'application
+if __name__ == "__main__":
+    pass  # L'application Streamlit s'exécute automatiquement", unsafe_allow_html=True)
+                    
+                    # Afficher les recommandations
+                    if "recommandations" in result["donnees"] and result["donnees"]["recommandations"]:
+                        st.markdown("<h3>Recommandations</h3>", unsafe_allow_html=True)
+                        st.markdown("<div class='info-box'>", unsafe_allow_html=True)
+                        
+                        for i, rec in enumerate(result["donnees"]["recommandations"], 1):
+                            st.markdown(f"{i}. {rec}", unsafe_allow_html=True)
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
                 
-                # OCR adaptatif sur la région du tableau
-                custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-                ocr_data = pytesseract.image_to_data(
-                    Image.open(temp_table_path),
-                    output_type=pytesseract.Output.DATAFRAME,
-                    config=custom_config,
-                    lang='fra'
+                elif result["type_document"] == "Relevé individuel des charges locatives":
+                    # Afficher les informations
+                    if "informations" in result["donnees"]:
+                        st.markdown("<h3>Informations du relevé</h3>", unsafe_allow_html=True)
+                        for key, value in result["donnees"]["informations"].items():
+                            st.write(f"**{key}:** {value}")
+                    
+                    # Afficher les charges
+                    if "charges" in result["donnees"]:
+                        st.markdown("<h3>Charges facturées</h3>", unsafe_allow_html=True)
+                        charges_df = pd.DataFrame(result["donnees"]["charges"])
+                        st.dataframe(charges_df)
+                        
+                        # Visualisation des charges
+                        if not charges_df.empty:
+                            st.markdown("<h3>Répartition des charges</h3>", unsafe_allow_html=True)
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            charges_df.plot.bar(
+                                x='designation', 
+                                y='quote_part', 
+                                ax=ax
+                            )
+                            plt.xticks(rotation=45, ha='right')
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                    
+                    # Afficher les totaux
+                    if "totaux" in result["donnees"]:
+                        st.markdown("<h3>Totaux</h3>", unsafe_allow_html=True)
+                        st.markdown("<div class='info-box'>", unsafe_allow_html=True)
+                        
+                        for key, value in result["donnees"]["totaux"].items():
+                            st.write(f"**{key}:** {value}€")
+                        
+                        st.markdown("</div>", unsafe_allow_html=True)
+                
+                elif result["type_document"] == "Relevé général de dépenses":
+                    # Afficher les informations
+                    if "informations" in result["donnees"]:
+                        st.markdown("<h3>Informations du relevé</h3>", unsafe_allow_html=True)
+                        for key, value in result["donnees"]["informations"].items():
+                            st.write(f"**{key}:** {value}")
+                    
+                    # Afficher les chapitres de charges
+                    if "chapitres_charges" in result["donnees"]:
+                        st.markdown("<h3>Chapitres de charges</h3>", unsafe_allow_html=True)
+                        
+                        for chapitre in result["donnees"]["chapitres_charges"]:
+                            with st.expander(f"Chapitre {chapitre['numero']} - {chapitre['designation']}"):
+                                if chapitre["details"]:
+                                    details_df = pd.DataFrame(chapitre["details"])
+                                    st.dataframe(details_df)
+                                else:
+                                    st.write("Aucun détail disponible pour ce chapitre")
+                    
+                    # Afficher le total
+                    if "total" in result["donnees"] and result["donnees"]["total"]:
+                        st.markdown("<h3>Total</h3>", unsafe_allow_html=True)
+                        st.markdown("<div class='info-box'>", unsafe_allow_html=True)
+                        st.write(f"**Total général:** {result['donnees']['total']}€")
+                        st.markdown("</div>", unsafe_allow_html=True)
+                
+                # JSON brut
+                with st.expander("Voir les données JSON brutes"):
+                    st.json(result)
+                
+                # Téléchargement du JSON
+                json_str = json.dumps(result, indent=2, ensure_ascii=False)
+                b64 = base64.b64encode(json_str.encode()).decode()
+                href = f'<a href="data:file/json;base64,{b64}" download="{uploaded_file.name.split(".")[0]}_analyse.json">Télécharger les résultats au format JSON</a>'
+                st.markdown(href, unsafe_allow_html=True)
+
+# Mode de comparaison de documents
+elif app_mode == "Comparer des documents":
+    st.markdown("<h2 class='sub-header'>Comparer des documents</h2>", unsafe_allow_html=True)
+    
+    if not st.session_state.analyzed_documents:
+        st.warning("Aucun document analysé disponible pour la comparaison. Veuillez d'abord analyser des documents.")
+    else:
+        # Afficher la liste des documents analysés
+        doc_options = [f"{doc['type_document']} - {doc.get('metadata', {}).get('periode', 'Période inconnue')} ({doc['source']['nom_fichier']})" for doc in st.session_state.analyzed_documents]
+        selected_docs = st.multiselect("Sélectionner les documents à comparer", doc_options)
+        
+        if len(selected_docs) >= 2:
+            # Récupérer les indices des documents sélectionnés
+            selected_indices = [doc_options.index(doc) for doc in selected_docs]
+            selected_data = [st.session_state.analyzed_documents[i] for i in selected_indices]
+            
+            # Créer la comparaison
+            comparison_df = create_comparison_chart(selected_data)
+            
+            if comparison_df is not None:
+                st.markdown("<h3>Tableau comparatif des charges</h3>", unsafe_allow_html=True)
+                st.dataframe(comparison_df)
+                
+                # Visualisation de la comparaison
+                st.markdown("<h3>Graphique comparatif</h3>", unsafe_allow_html=True)
+                
+                # Créer un tableau croisé dynamique pour la comparaison
+                pivot_table = pd.pivot_table(
+                    comparison_df,
+                    values='Montant',
+                    index='Poste',
+                    columns='Période',
+                    aggfunc='sum'
                 )
                 
-                # Reconstruire le tableau avec une approche intelligente
-                df = self.smart_table_reconstruction(ocr_data, temp_table_path)
-                if not df.empty:
-                    tables.append(df)
-            
-            return tables
-            
-        except Exception as e:
-            st.error(f"Erreur lors de l'extraction du tableau de la page {page_num}: {str(e)}")
-            return []
-    
-    def smart_table_reconstruction(self, ocr_data, img_path):
-        """Reconstruction intelligente de la structure du tableau"""
-        try:
-            # Filtrer les données OCR de faible confiance
-            ocr_data = ocr_data[ocr_data['conf'] > 40]
-            
-            if ocr_data.empty:
-                return pd.DataFrame()
-            
-            # Analyse de la géométrie des blocs de texte pour détecter les colonnes et lignes
-            # Algorithme de clustering adaptatif pour les positions
-            ocr_data['line_cluster'] = self.adaptive_cluster(ocr_data['top'].values)
-            ocr_data['col_cluster'] = self.adaptive_cluster(ocr_data['left'].values)
-            
-            # Création d'une matrice représentant le tableau
-            pivot_table = pd.DataFrame(index=sorted(ocr_data['line_cluster'].unique()),
-                                     columns=sorted(ocr_data['col_cluster'].unique()))
-            
-            # Remplir la matrice avec les valeurs
-            for _, row in ocr_data.iterrows():
-                line = row['line_cluster']
-                col = row['col_cluster']
-                text = row['text']
+                fig, ax = plt.subplots(figsize=(12, 8))
+                pivot_table.plot(kind='bar', ax=ax)
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                st.pyplot(fig)
                 
-                current = pivot_table.at[line, col]
-                if pd.isna(current):
-                    pivot_table.at[line, col] = text
-                else:
-                    pivot_table.at[line, col] = f"{current} {text}"
-            
-            # Convertir en DataFrame normal
-            result = pivot_table.reset_index(drop=True)
-            
-            # Essayer d'identifier les en-têtes
-            if not result.empty:
-                # La première ligne est probablement l'en-tête
-                result.columns = result.iloc[0].fillna(f'Col_{{i}}' for i in range(len(result.columns)))
-                result = result.iloc[1:].reset_index(drop=True)
-                
-                # Nettoyer les noms de colonnes
-                result.columns = [str(col).strip() for col in result.columns]
-            
-            return result
-            
-        except Exception as e:
-            st.error(f"Erreur lors de la reconstruction du tableau: {str(e)}")
-            return pd.DataFrame()
-    
-    def adaptive_cluster(self, values, threshold_factor=0.05):
-        """Algorithme de clustering adaptatif pour détecter les lignes/colonnes"""
-        if len(values) == 0:
-            return []
-            
-        # Trier les valeurs
-        sorted_values = np.sort(values)
-        
-        # Calculer les différences entre valeurs consécutives
-        diffs = np.diff(sorted_values)
-        
-        # Calculer le seuil adaptatif basé sur l'échelle des données
-        range_value = sorted_values[-1] - sorted_values[0]
-        threshold = max(5, range_value * threshold_factor)  # Minimum 5 pixels
-        
-        # Trouver les ruptures (nouvelles lignes/colonnes)
-        breaks = np.where(diffs > threshold)[0]
-        
-        # Créer les clusters
-        clusters = []
-        start_idx = 0
-        
-        for break_idx in breaks:
-            clusters.extend([len(clusters)] * (break_idx + 1 - start_idx))
-            start_idx = break_idx + 1
-            
-        # Ajouter le dernier cluster
-        clusters.extend([len(clusters)] * (len(sorted_values) - start_idx))
-        
-        # Recréer les assignations de cluster dans l'ordre original
-        result = np.zeros_like(values, dtype=int)
-        sorted_indices = np.argsort(values)
-        for i, cluster in enumerate(clusters):
-            result[sorted_indices[i]] = cluster
-            
-        return result
-    
-    def process_tables(self, tables):
-        """Traite et nettoie les tableaux extraits"""
-        processed_tables = []
-        
-        for table in tables:
-            if table.empty:
-                continue
-                
-            # Nettoyer les noms de colonnes
-            if table.columns.dtype == 'object':
-                table.columns = [str(col).strip() for col in table.columns]
-            
-            # Supprimer les lignes vides
-            table = table.dropna(how='all')
-            
-            # Supprimer les colonnes vides
-            table = table.dropna(axis=1, how='all')
-            
-            if not table.empty:
-                processed_tables.append(table)
-        
-        return processed_tables
-    
-    def merge_and_clean_tables(self, tables1, tables2):
-        """Fusionne et nettoie les tableaux provenant de différentes méthodes d'extraction"""
-        all_tables = tables1.copy() if tables1 else []
-        
-        # Ajouter les tables de la deuxième méthode en évitant les doublons
-        if tables2:
-            for table2 in tables2:
-                is_duplicate = False
-                for table1 in all_tables:
-                    if self.is_similar_table(table1, table2):
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate:
-                    all_tables.append(table2)
-        
-        return self.process_tables(all_tables)
-    
-    def is_similar_table(self, table1, table2, similarity_threshold=0.7):
-        """Détermine si deux tableaux sont similaires"""
-        # Comparaison basique par forme
-        if table1.shape != table2.shape:
-            return False
-            
-        # Comparaison par échantillonnage de contenu
-        # Prendre un échantillon de cellules et voir si elles correspondent
-        n_samples = min(5, len(table1))
-        sample_indices = np.random.choice(len(table1), n_samples, replace=False)
-        
-        matches = 0
-        for idx in sample_indices:
-            row1 = table1.iloc[idx].astype(str)
-            row2 = table2.iloc[idx].astype(str)
-            
-            # Calculer la similarité entre les lignes
-            similarity = sum(1 for a, b in zip(row1, row2) if a == b) / len(row1)
-            if similarity > similarity_threshold:
-                matches += 1
-        
-        return matches / n_samples > similarity_threshold
-    
-    def is_extraction_incomplete(self, tables):
-        """Détermine si l'extraction est incomplète ou de mauvaise qualité"""
-        if not tables:
-            return True
-            
-        # Vérifier la qualité des tableaux extraits
-        for table in tables:
-            # Un tableau de charges devrait avoir au moins quelques colonnes
-            if len(table.columns) < 3:
-                return True
-                
-            # Vérifier si le tableau contient probablement des données numériques
-            numeric_cells = 0
-            total_cells = 0
-            
-            for col in table.columns:
-                try:
-                    numeric_values = pd.to_numeric(table[col], errors='coerce')
-                    numeric_cells += numeric_values.notna().sum()
-                    total_cells += len(table[col])
-                except:
-                    pass
-            
-            # Un tableau de charges devrait contenir un certain pourcentage de valeurs numériques
-            if total_cells > 0 and numeric_cells / total_cells < 0.2:
-                return True
-        
-        return False
-    
-    def reconstruct_tables_from_text(self, text):
-        """Reconstruit les tableaux à partir du texte OCR pour documents non structurés"""
-        lines = text.strip().split('\n')
-        
-        # Supprimer les lignes vides
-        lines = [line.strip() for line in lines if line.strip()]
-        
-        if not lines:
-            return []
-            
-        # Rechercher des modèles de tableaux dans le texte
-        table_sections = []
-        current_section = []
-        
-        for line in lines:
-            # Déterminer si la ligne pourrait faire partie d'un tableau
-            # (contient des nombres et des séparateurs visuels)
-            if re.search(r'\d+[.,]\d+', line) and (re.search(r'\s{2,}', line) or '|' in line):
-                current_section.append(line)
-            elif current_section:
-                if len(current_section) > 2:  # Un tableau doit avoir au moins 3 lignes
-                    table_sections.append(current_section)
-                current_section = []
-        
-        # Ajouter la dernière section si elle existe
-        if current_section and len(current_section) > 2:
-            table_sections.append(current_section)
-        
-        # Convertir chaque section en DataFrame
-        tables = []
-        for section in table_sections:
-            table = self.convert_text_section_to_table(section)
-            if not table.empty:
-                tables.append(table)
-        
-        return tables
-    
-    def convert_text_section_to_table(self, text_lines):
-        """Convertit une section de texte en tableau structuré"""
-        # Détecter le séparateur le plus probable
-        if '|' in text_lines[0]:
-            separator = '|'
-        else:
-            # Utiliser des espaces multiples comme séparateur
-            separator = r'\s{2,}'
-        
-        # Diviser les lignes selon le séparateur
-        rows = []
-        for line in text_lines:
-            if separator == '|':
-                cells = [cell.strip() for cell in line.split('|')]
-                # Éliminer les cellules vides aux extrémités
-                if cells and not cells[0].strip():
-                    cells = cells[1:]
-                if cells and not cells[-1].strip():
-                    cells = cells[:-1]
+                # Calcul de l'évolution globale
+                if len(pivot_table.columns) >= 2:
+                    st.markdown("<h3>Évolution globale</h3>", unsafe_allow_html=True)
+                    
+                    total_by_period = pivot_table.sum()
+                    evolution_pct = []
+                    
+                    for i in range(1, len(total_by_period)):
+                        prev = total_by_period.iloc[i-1]
+                        curr = total_by_period.iloc[i]
+                        evol = ((curr - prev) / prev) * 100
+                        evolution_pct.append({
+                            "De": total_by_period.index[i-1],
+                            "À": total_by_period.index[i],
+                            "Évolution (%)": round(evol, 2)
+                        })
+                    
+                    if evolution_pct:
+                        evolution_df = pd.DataFrame(evolution_pct)
+                        st.dataframe(evolution_df)
+                        
+                        # Visualisation de l'évolution
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        ax.bar(
+                            [f"{e['De']} → {e['À']}" for e in evolution_pct],
+                            [e['Évolution (%)'] for e in evolution_pct],
+                            color=['green' if e['Évolution (%)'] <= 0 else 'red' for e in evolution_pct]
+                        )
+                        ax.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+                        ax.set_ylabel('Évolution (%)')
+                        ax.set_title('Évolution des charges entre périodes')
+                        plt.xticks(rotation=45, ha='right')
+                        plt.tight_layout()
+                        st.pyplot(fig)
             else:
-                cells = [cell.strip() for cell in re.split(separator, line) if cell.strip()]
-            
-            if cells:
-                rows.append(cells)
-        
-        if not rows:
-            return pd.DataFrame()
-        
-        # Normaliser la structure (nombre de colonnes)
-        max_cols = max(len(row) for row in rows)
-        normalized_rows = [row + [''] * (max_cols - len(row)) for row in rows]
-        
-        # Créer le DataFrame
-        if len(normalized_rows) > 1:
-            df = pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0])
+                st.warning("Impossible de créer une comparaison avec les documents sélectionnés")
         else:
-            df = pd.DataFrame([normalized_rows[0]])
-        
-        return df
-    
-    def extract_charges_metadata(self):
-        """Extrait les métadonnées liées aux charges"""
-        temp_pdf_path = os.path.join(self.temp_dir, "temp.pdf")
-        with open(temp_pdf_path, 'wb') as f:
-            f.write(self.pdf_file.getvalue())
-            
-        images = pdf2image.convert_from_path(temp_pdf_path, first_page=1, last_page=1)
-        if not images:
-            return {}
-            
-        img_path = os.path.join(self.temp_dir, "first_page.png")
-        images[0].save(img_path, 'PNG')
-        
-        text = pytesseract.image_to_string(Image.open(img_path), lang='fra')
-        
-        metadata = {
-            'société': None,
-            'immeuble': None,
-            'adresse': None,
-            'période': None,
-            'locataire': None
-        }
-        
-        # Extraire les informations avec des RegEx intelligents
-        # Société
-        society_patterns = [
-            r'(?:Société|SCI|SAS|SARL|SA)\s*:?\s*([A-Z0-9 ]+)',
-            r'^([A-Z][A-Z0-9 ]+)(?:\n|$)'
-        ]
-        for pattern in society_patterns:
-            match = re.search(pattern, text, re.MULTILINE)
-            if match:
-                metadata['société'] = match.group(1).strip()
-                break
-        
-        # Immeuble
-        immeuble_patterns = [
-            r'Immeuble\s*:?\s*([A-Z0-9 ]+)',
-            r'(?:FREJUS|CAPITOU)',
-        ]
-        for pattern in immeuble_patterns:
-            match = re.search(pattern, text)
-            if match:
-                metadata['immeuble'] = match.group(0).strip()
-                break
-        
-        # Adresse (recherche du code postal et ville)
-        address_match = re.search(r'\b(\d{5})\s+([A-Z]+)\b', text)
-        if address_match:
-            # Rechercher une ligne d'adresse autour du code postal
-            cp_index = text.find(address_match.group(0))
-            line_start = text.rfind('\n', 0, cp_index) + 1
-            line_end = text.find('\n', cp_index)
-            
-            if line_start > 0 and line_end > cp_index:
-                metadata['adresse'] = text[line_start:line_end].strip()
-        
-        # Période
-        period_patterns = [
-            r'[Pp]ériode\s+du\s+(\d{2}/\d{2}/\d{4})\s+au\s+(\d{2}/\d{2}/\d{4})',
-            r'du\s+(\d{2}/\d{2}/\d{4})\s+au\s+(\d{2}/\d{2}/\d{4})'
-        ]
-        for pattern in period_patterns:
-            match = re.search(pattern, text)
-            if match:
-                metadata['période'] = f"{match.group(1)} au {match.group(2)}"
-                break
-        
-        # Locataire
-        locataire_patterns = [
-            r'(?:ELECTRO DEPOT|DEPOT FRANCE)',
-            r'(?:Locataire|Preneur)\s*:?\s*([A-Z][A-Za-z0-9 ]+)'
-        ]
-        for pattern in locataire_patterns:
-            match = re.search(pattern, text)
-            if match:
-                if match.groups():
-                    metadata['locataire'] = match.group(1).strip()
-                else:
-                    metadata['locataire'] = match.group(0).strip()
-                break
-        
-        return metadata
-    
-    def process_charges_data(self, tables):
-        """Traite les tableaux pour extraire les données de charges"""
-        if not tables:
-            return pd.DataFrame()
-        
-        # Identifier les tableaux pertinents contenant des données de charges
-        charges_tables = []
-        
-        for table in tables:
-            if table.empty:
-                continue
-            
-            # Nettoyer les noms de colonnes
-            if table.columns.dtype == 'object':
-                table.columns = [str(col).strip() for col in table.columns]
-            
-            # Évaluer si ce tableau contient probablement des données de charges
-            score = 0
-            
-            # Vérifier la présence de colonnes typiques
-            column_patterns = {
-                'designation': [r'(?:désignation|libellé|intitulé|poste|nature)', 3],
-                'montant': [r'(?:montant|mont\.)', 3],
-                'quote_part': [r'(?:quote|part|répartir|quote-part)', 3],
-                'code': [r'(?:code|chapitre|chap|clé)', 2],
-                'tva': [r'(?:tva|t\.v\.a)', 2],
-            }
-            
-            for col in table.columns:
-                col_lower = str(col).lower()
-                for pattern, points in column_patterns.values():
-                    if re.search(pattern, col_lower):
-                        score += points
-            
-            # Vérifier la présence de mots-clés dans les données
-            keywords = [
-                r'nettoyage', r'déchet', r'électricité', r'entretien',
-                r'espaces verts', r'honoraire', r'eau', r'ascenseur',
-                r'chauffage', r'gardien', r'sécurité', r'vidéosurveillance'
-            ]
-            
-            for keyword in keywords:
-                if any(re.search(keyword, str(cell), re.IGNORECASE) for cell in table.values.flatten() if isinstance(cell, str)):
-                    score += 1
-            
-            # Vérifier la présence de valeurs numériques
-            numeric_cols = 0
-            for col in table.columns:
-                try:
-                    numeric_values = pd.to_numeric(table[col], errors='coerce')
-                    if numeric_values.notna().sum() > len(table) / 2:
-                        numeric_cols += 1
-                except:
-                    pass
-            
-            if numeric_cols >= 2:
-                score += 3
-            
-            # Si le score est suffisant, c'est probablement un tableau de charges
-            if score >= 5:
-                charges_tables.append(table)
-        
-        # Si aucun tableau pertinent n'est trouvé, prendre le plus grand tableau
-        if not charges_tables and tables:
-            largest_table = max(tables, key=lambda t: t.size)
-            charges_tables.append(largest_table)
-        
-        # Fusionner les tableaux de charges
-        if len(charges_tables) > 1:
-            # Vérifier si les tableaux sont complémentaires (différentes pages d'un même tableau)
-            if self.are_complementary_tables(charges_tables):
-                # Concaténer les tableaux
-                merged_table = pd.concat(charges_tables, ignore_index=True)
-            else:
-                # Prendre le tableau le plus pertinent/complet
-                merged_table = max(charges_tables, key=lambda t: t.size)
-        elif charges_tables:
-            merged_table = charges_tables[0]
-        else:
-            return pd.DataFrame()
-        
-        # Normaliser les noms de colonnes
-        merged_table = self.normalize_columns(merged_table)
-        
-        # Nettoyer et convertir les données numériques
-        merged_table = self.clean_charges_data(merged_table)
-        
-        return merged_table
-    
-    def are_complementary_tables(self, tables):
-        """Détermine si les tableaux sont complémentaires (suite logique)"""
-        if len(tables) < 2:
-            return False
-        
-        # Vérifier si les colonnes sont similaires
-        columns_similarity = all(
-            set(tables[0].columns).issubset(set(table.columns)) for table in tables[1:]
-        ) or all(
-            set(table.columns).issubset(set(tables[0].columns)) for table in tables[1:]
-        )
-        
-        if not columns_similarity:
-            return False
-        
-        # Vérifier si les tableaux contiennent des données qui se suivent (ex: différents chapitres)
-        # ou des données dupliquées
-        if 'Code' in tables[0].columns:
-            codes = set()
-            for table in tables:
-                table_codes = set(table['Code'].astype(str))
-                # Si plus de 20% des codes sont déjà vus, ce n'est probablement pas complémentaire
-                if len(table_codes.intersection(codes)) > 0.2 * len(table_codes):
-                    return False
-                codes.update(table_codes)
-            return True
-        
-        return True
-    
-    def normalize_columns(self, table):
-        """Normalise les noms de colonnes du tableau de charges"""
-        column_mapping = {}
-        
-        for col in table.columns:
-            col_lower = str(col).lower()
-            
-            if any(pattern in col_lower for pattern in ['désignation', 'libellé', 'intitulé']):
-                column_mapping[col] = 'Désignation'
-            elif any(pattern in col_lower for pattern in ['code', 'chapitre', 'chap', 'clé']):
-                column_mapping[col] = 'Code'
-            elif 'mont' in col_lower and 'ht' in col_lower:
-                column_mapping[col] = 'Montant HT'
-            elif 'mont' in col_lower and 'tva' in col_lower:
-                column_mapping[col] = 'Montant TVA'
-            elif 'mont' in col_lower and 'ttc' in col_lower:
-                column_mapping[col] = 'Montant TTC'
-            elif any(pattern in col_lower for pattern in ['quote', 'part', 'répartir']) and 'ht' in col_lower:
-                column_mapping[col] = 'Quote-part HT'
-            elif any(pattern in col_lower for pattern in ['quote', 'part', 'répartir']) and 'tva' in col_lower:
-                column_mapping[col] = 'Quote-part TVA'
-            elif any(pattern in col_lower for pattern in ['tantième', 'millième']) and 'glob' in col_lower:
-                column_mapping[col] = 'Tantièmes globaux'
-            elif any(pattern in col_lower for pattern in ['tantième', 'millième']) and 'part' in col_lower:
-                column_mapping[col] = 'Tantièmes particuliers'
-            elif 'date' in col_lower:
-                column_mapping[col] = 'Date'
-            elif 'r' in col_lower and '%' in col_lower:
-                column_mapping[col] = 'Pourcentage'
-        
-        # Appliquer le mapping
-        if column_mapping:
-            table = table.rename(columns=column_mapping)
-        
-        return table
-    
-    def clean_charges_data(self, table):
-        """Nettoie et convertit les données numériques du tableau de charges"""
-        # Fonction pour convertir les valeurs en numérique
-        def convert_to_numeric(val):
-            if pd.isna(val):
-                return np.nan
-            
-            if isinstance(val, (int, float)):
-                return float(val)
-            
-            # Nettoyer la chaîne
-            val_str = str(val)
-            val_str = val_str.replace(' ', '').replace(',', '.').replace('€', '')
-            
-            # Supprimer les caractères non numériques sauf points et signes
-            val_str = re.sub(r'[^\d\.\-\+]', '', val_str)
-            
-            try:
-                return float(val_str)
-            except ValueError:
-                return np.nan
-        
-        # Colonnes qui devraient être numériques
-        numeric_columns = [
-            'Montant HT', 'Montant TVA', 'Montant TTC',
-            'Quote-part HT', 'Quote-part TVA',
-            'Tantièmes globaux', 'Tantièmes particuliers'
-        ]
-        
-        # Convertir les colonnes
-        for col in numeric_columns:
-            if col in table.columns:
-                table[col] = table[col].apply(convert_to_numeric)
-        
-        # Supprimer les lignes ne contenant que des NaN
-        table = table.dropna(how='all')
-        
-        # Ajouter une colonne de pourcentage si possible
-        if 'Montant HT' in table.columns and 'Quote-part HT' in table.columns:
-            table['Pourcentage'] = table.apply(
-                lambda row: 0 if pd.isna(row['Montant HT']) or pd.isna(row['Quote-part HT']) or row['Montant HT'] == 0
-                           else row['Quote-part HT'] / row['Montant HT'] * 100,
-                axis=1
-            )
-        
-        return table
-    
-    def extract_and_process(self):
-        """Méthode principale pour extraire et traiter les données de charges"""
-        # Analyser la structure du document
-        structure_info = self.analyze_document_structure()
-        
-        # Extraire les tableaux
-        tables = self.extract_optimized()
-        
-        # Traiter les données de charges
-        charges_data = self.process_charges_data(tables)
-        
-        # Extraire les métadonnées
-        metadata = self.extract_charges_metadata()
-        
-        # Nettoyer les fichiers temporaires
-        self.cleanup()
-        
-        return charges_data, metadata, structure_info
-    
-    def cleanup(self):
-        """Nettoie les fichiers temporaires"""
-        try:
-            for file in os.listdir(self.temp_dir):
-                os.remove(os.path.join(self.temp_dir, file))
-            os.rmdir(self.temp_dir)
-        except Exception as e:
-            st.error(f"Erreur lors du nettoyage: {str(e)}")
+            st.info("Veuillez sélectionner au moins deux documents pour effectuer une comparaison")
 
-
-def get_table_download_link(df, filename, format_type):
-    """Génère un lien de téléchargement pour un DataFrame"""
-    if format_type == 'csv':
-        csv = df.to_csv(index=False, sep=';')
-        b64 = base64.b64encode(csv.encode()).decode()
-        mime_type = 'text/csv'
-        file_extension = 'csv'
-    elif format_type == 'xlsx':
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Charges', index=False)
-        b64 = base64.b64encode(output.getvalue()).decode()
-        mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        file_extension = 'xlsx'
-    elif format_type == 'json':
-        json_str = df.to_json(orient='records', indent=4)
-        b64 = base64.b64encode(json_str.encode()).decode()
-        mime_type = 'application/json'
-        file_extension = 'json'
-    else:
-        return ""
-
-    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{file_extension}" class="download-link">Télécharger {filename}.{file_extension}</a>'
-    return href
-
-
-def main():
-    st.title("Extracteur Intelligent de Charges")
-    st.markdown("""
-    <style>
-        .main-header {
-            font-size: 2.5rem;
-            color: #1E88E5;
-            margin-bottom: 1rem;
-        }
-        .sub-header {
-            font-size: 1.5rem;
-            color: #0D47A1;
-            margin-bottom: 1rem;
-        }
-        .info-box {
-            background-color: #E3F2FD;
-            border-radius: 5px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-        .info-box-title {
-            font-weight: bold;
-            margin-bottom: 0.5rem;
-        }
-        .download-link {
-            background-color: #1976D2;
-            color: white;
-            padding: 0.5rem 1rem;
-            border-radius: 5px;
-            text-decoration: none;
-            display: inline-block;
-            margin-top: 0.5rem;
-        }
-        .download-link:hover {
-            background-color: #1565C0;
-        }
-        .metadata-box {
-            background-color: #E8F5E9;
-            border-radius: 5px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-        .stat-box {
-            background-color: #FFF8E1;
-            border-radius: 5px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #FB8C00;
-        }
-        .stat-label {
-            font-size: 1rem;
-            color: #424242;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    st.markdown('<h1 class="main-header">Extracteur Intelligent de Charges</h1>', unsafe_allow_html=True)
+# Mode "À propos"
+else:
+    st.markdown("<h2 class='sub-header'>À propos de l'Analyseur de Charges Locatives Commerciales</h2>", unsafe_allow_html=True)
     
     st.markdown("""
     <div class="info-box">
-        <div class="info-box-title">Optimisé par intelligence artificielle</div>
-        <p>Cette application utilise l'IA pour extraire automatiquement les données de charges depuis vos relevés PDF, 
-        même ceux contenant des tableaux sous forme d'images.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    <p>L'<b>Analyseur de Charges Locatives Commerciales</b> est un outil développé pour faciliter l'analyse et la gestion des charges immobilières commerciales.</p>
     
-    # Sidebar
-    st.sidebar.title("Options")
-    output_format = st.sidebar.selectbox(
-        "Format de téléchargement",
-        options=["csv", "xlsx", "json"],
-        index=0
-    )
+    <p>Cet outil intègre des technologies d'intelligence artificielle et de reconnaissance optique de caractères (OCR) pour extraire automatiquement les informations pertinentes des documents de charges locatives, tels que :</p>
+    <ul>
+        <li>Rapports d'analyse de charges</li>
+        <li>Relevés individuels de charges locatives</li>
+        <li>Relevés généraux de dépenses</li>
+        <li>Factures et avoirs</li>
+    </ul>
     
-    advanced_options = st.sidebar.expander("Options avancées")
-    with advanced_options:
-        ocr_lang = st.selectbox(
-            "Langue du document",
-            options=["fra", "fra+eng", "eng"],
-            index=0
-        )
-        
-        use_advanced_ocr = st.checkbox(
-            "Utiliser l'OCR avancé",
-            value=True,
-            help="Active des techniques d'OCR avancées pour les documents difficiles à lire"
-        )
+    <h3>Fonctionnalités principales</h3>
+    <ul>
+        <li>Extraction automatique des données de vos documents PDF</li>
+        <li>Classification du type de document</li>
+        <li>Structuration des données en format JSON</li>
+        <li>Visualisation des répartitions de charges</li>
+        <li>Identification des charges potentiellement contestables</li>
+        <li>Comparaison entre différentes périodes</li>
+        <li>Analyse des évolutions de charges</li>
+    </ul>
     
-    # Zone de téléchargement de fichier
-    uploaded_file = st.file_uploader("Choisissez un relevé de charges au format PDF", type=['pdf'])
+    <h3>Comment utiliser cet outil</h3>
+    <ol>
+        <li>Commencez par analyser vos documents dans l'onglet "Analyser un document"</li>
+        <li>Une fois plusieurs documents analysés, utilisez l'onglet "Comparer des documents" pour visualiser leur évolution</li>
+        <li>Vous pouvez télécharger les résultats au format JSON pour les intégrer à d'autres systèmes</li>
+    </ol>
     
-    if uploaded_file is not None:
-        # Afficher les informations du fichier
-        file_details = {
-            "Nom du fichier": uploaded_file.name,
-            "Taille": f"{uploaded_file.size / 1024:.2f} KB"
-        }
-        
-        st.markdown(f"""
-        <div class="info-box">
-            <div class="info-box-title">Fichier sélectionné</div>
-            <p><strong>Nom:</strong> {file_details["Nom du fichier"]}</p>
-            <p><strong>Taille:</strong> {file_details["Taille"]}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Bouton pour lancer l'extraction
-        if st.button("Extraire les données de charges"):
-            with st.spinner('Analyse intelligente en cours...'):
-                try:
-                    # Initialiser l'extracteur intelligent
-                    extractor = SmartChargesExtractor(uploaded_file)
-                    
-                    # Extraire et traiter les données
-                    charges_data, metadata, structure_info = extractor.extract_and_process()
-                    
-                    if not charges_data.empty:
-                        # Afficher les métadonnées du document
-                        st.markdown('<h2 class="sub-header">Informations du document</h2>', unsafe_allow_html=True)
-                        
-                        metadata_html = '<div class="metadata-box">'
-                        for key, value in metadata.items():
-                            if value:
-                                metadata_html += f'<p><strong>{key.capitalize()}:</strong> {value}</p>'
-                        metadata_html += '</div>'
-                        st.markdown(metadata_html, unsafe_allow_html=True)
-                        
-                        # Afficher les informations de structure du document
-                        if structure_info:
-                            st.markdown('<h2 class="sub-header">Analyse du document</h2>', unsafe_allow_html=True)
-                            
-                            doc_type = structure_info.get('type', 'inconnu')
-                            doc_structure = structure_info.get('structure', 'inconnu')
-                            
-                            doc_type_friendly = {
-                                'releve_general': 'Relevé général de dépenses',
-                                'releve_individuel': 'Relevé individuel des charges',
-                                'charges_locatives': 'Décompte de charges locatives',
-                                'generic': 'Document générique'
-                            }.get(doc_type, 'Type inconnu')
-                            
-                            doc_structure_friendly = {
-                                'tabular': 'Structure tabulaire bien définie',
-                                'semi_tabular': 'Structure semi-tabulaire',
-                                'unstructured': 'Document peu structuré'
-                            }.get(doc_structure, 'Structure inconnue')
-                            
-                            st.markdown(f"""
-                            <div class="info-box">
-                                <p><strong>Type de document:</strong> {doc_type_friendly}</p>
-                                <p><strong>Structure détectée:</strong> {doc_structure_friendly}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        # Afficher les statistiques des charges
-                        if 'Montant HT' in charges_data.columns and 'Quote-part HT' in charges_data.columns:
-                            total_ht = charges_data['Montant HT'].sum()
-                            total_quote_part = charges_data['Quote-part HT'].sum()
-                            pourcentage_moyen = total_quote_part / total_ht * 100 if total_ht > 0 else 0
-                            
-                            st.markdown('<h2 class="sub-header">Synthèse des charges</h2>', unsafe_allow_html=True)
-                            
-                            cols = st.columns(3)
-                            with cols[0]:
-                                st.markdown(f"""
-                                <div class="stat-box">
-                                    <div class="stat-label">Total charges</div>
-                                    <div class="stat-value">{total_ht:.2f} €</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            
-                            with cols[1]:
-                                st.markdown(f"""
-                                <div class="stat-box">
-                                    <div class="stat-label">Quote-part</div>
-                                    <div class="stat-value">{total_quote_part:.2f} €</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            
-                            with cols[2]:
-                                st.markdown(f"""
-                                <div class="stat-box">
-                                    <div class="stat-label">Pourcentage</div>
-                                    <div class="stat-value">{pourcentage_moyen:.2f} %</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                        
-                        # Afficher le tableau des charges
-                        st.markdown('<h2 class="sub-header">Détail des charges</h2>', unsafe_allow_html=True)
-                        st.dataframe(charges_data)
-                        
-                        # Lien de téléchargement
-                        st.markdown('<h2 class="sub-header">Télécharger les données</h2>', unsafe_allow_html=True)
-                        file_base_name = uploaded_file.name.split('.')[0]
-                        download_link = get_table_download_link(charges_data, f"{file_base_name}_charges", output_format)
-                        st.markdown(download_link, unsafe_allow_html=True)
-                        
-                        # Analyse graphique
-                        if 'Désignation' in charges_data.columns and 'Quote-part HT' in charges_data.columns:
-                            st.markdown('<h2 class="sub-header">Analyse graphique</h2>', unsafe_allow_html=True)
-                            
-                            # Préparation des données pour le graphique
-                            chart_data = charges_data.dropna(subset=['Désignation', 'Quote-part HT']).copy()
-                            
-                            # Tronquer les désignations trop longues
-                            chart_data['Désignation'] = chart_data['Désignation'].apply(
-                                lambda x: x[:25] + '...' if len(str(x)) > 25 else x
-                            )
-                            
-                            if len(chart_data) > 0:
-                                # Limiter aux 10 charges les plus importantes
-                                chart_data = chart_data.sort_values('Quote-part HT', ascending=False).head(10)
-                                
-                                # Créer un graphique à barres
-                                st.bar_chart(chart_data.set_index('Désignation')['Quote-part HT'])
-                                
-                                # Afficher la répartition en camembert
-                                fig, ax = plt.subplots(figsize=(10, 10))
-                                wedges, texts, autotexts = ax.pie(
-                                    chart_data['Quote-part HT'],
-                                    labels=chart_data['Désignation'],
-                                    autopct='%1.1f%%',
-                                    startangle=90,
-                                    shadow=False
-                                )
-                                
-                                # Égaliser la taille des étiquettes
-                                plt.setp(autotexts, size=10, weight="bold")
-                                plt.setp(texts, size=9)
-                                
-                                ax.set_title('Répartition des principales charges')
-                                st.pyplot(fig)
-                    else:
-                        st.error("Aucune donnée de charges n'a pu être extraite du document. Veuillez vérifier que le PDF contient des données de charges.")
-                
-                except Exception as e:
-                    st.error(f"Une erreur s'est produite lors de l'extraction: {str(e)}")
-    
-    # Informations supplémentaires
-    st.markdown("---")
-    with st.expander("Guide d'utilisation"):
-        st.markdown("""
-        ### Comment utiliser cette application
-        
-        1. **Téléchargez** votre relevé de charges au format PDF
-        2. Cliquez sur **Extraire les données de charges**
-        3. Examinez les informations extraites et les visualisations
-        4. **Téléchargez** les données dans le format de votre choix pour analyse approfondie
-        
-        ### Types de documents supportés
-        
-        - Relevés généraux de dépenses d'immeuble
-        - Relevés individuels de charges locatives
-        - Factures de charges avec détail des postes
-        - Décomptes annuels de régularisation de charges
-        """)
-    
-    with st.expander("À propos de l'analyse intelligente"):
-        st.markdown("""
-        ### Comment fonctionne l'extraction intelligente
-        
-        Cette application utilise plusieurs techniques d'IA pour optimiser l'extraction des données :
-        
-        1. **Analyse adaptative de structure** - L'application détermine automatiquement le type et la structure du document
-        2. **Extraction multi-stratégie** - Différentes méthodes sont utilisées selon le type de document
-        3. **OCR adaptatif** - La reconnaissance de caractères s'adapte à la qualité du document
-        4. **Reconstruction intelligente** - Les tableaux sont reconstruits même à partir de documents mal structurés
-        5. **Analyse sémantique** - Identification du contexte et du sens des données
-        
-        Cette approche permet une extraction plus précise avec moins de ressources système.
-        """)
-
-
-if __name__ == "__main__":
-    main()
+    <h3>Notes techniques</h3>
+    <p>Cette application est une version de démonstration déployée sur Streamlit Cloud. Elle utilise :</p>
+    <ul>
+        <li>Streamlit pour l'interface utilisateur</li>
+        <li>PyTesseract et pdf2image pour l'OCR</li>
+        <li>Pandas et Matplotlib pour l'analyse de données et les visualisations</li>
+        <li>RegEx pour l'extraction de patterns dans le texte</li>
+    </ul>
