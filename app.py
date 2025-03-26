@@ -425,28 +425,7 @@ if app_mode == "Analyser un document":
                             st.markdown(f"Justification: {charge['justification']}", unsafe_allow_html=True)
                             st.markdown("---")
                         
-                        
-                        st.markdown("    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p></div>", unsafe_allow_html=True)
-                    
-    
-    # Ajouter un espace pour les informations de déploiement
-    st.markdown("---")
-    st.markdown("### Déploiement sur Streamlit Cloud")
-    
-    with st.expander("Instructions de déploiement"):
-        st.markdown("""
-    
-    st.markdown("---")
-    st.markdown("""
-    <p style="text-align: center; color: #888;">
-    © 2025 Analyseur de Charges Locatives Commerciales<br>
-    Version de démonstration 1.0.0
-    </p>
-    """, unsafe_allow_html=True)
-
-# Exécuter l'application
-if __name__ == "__main__":
-    pass  # L'application Streamlit s'exécute automatiquement", unsafe_allow_html=True)
+                        st.markdown("</div>", unsafe_allow_html=True)
                     
                     # Afficher les recommandations
                     if "recommandations" in result["donnees"] and result["donnees"]["recommandations"]:
@@ -652,5 +631,59 @@ else:
         <li>Pandas et Matplotlib pour l'analyse de données et les visualisations</li>
         <li>RegEx pour l'extraction de patterns dans le texte</li>
     </ul>
+    
+    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Ajouter un espace pour les informations de déploiement
+    st.markdown("---")
+    st.markdown("### Déploiement sur Streamlit Cloud")
+    
+    with st.expander("Instructions de déploiement"):
+        st.markdown("""
+        Pour déployer cette application sur Streamlit Cloud :
+        
+        1. **Préparez votre environnement GitHub** :
+           - Créez un nouveau dépôt GitHub
+           - Téléchargez ce script et nommez-le `app.py`
+           - Créez un fichier `requirements.txt` avec les dépendances suivantes :
+        
+        ```
+        streamlit
+        pandas
+        numpy
+        pillow
+        pytesseract
+        pdf2image
+        matplotlib
+        seaborn
+        ```
+        
+        2. **Configurations supplémentaires** :
+           - Pour l'OCR, ajoutez également les dépendances système dans un fichier `packages.txt` :
+        
+        ```
+        tesseract-ocr
+        tesseract-ocr-fra
+        poppler-utils
+        ```
+        
+        3. **Déploiement** :
+           - Connectez-vous à [Streamlit Cloud](https://streamlit.io/cloud)
+           - Créez une nouvelle application en pointant vers votre dépôt GitHub
+           - Configurez les paramètres de déploiement en précisant que vous avez des dépendances système
+           - Déployez l'application
+        """)
+    
+    st.markdown("---")
+    st.markdown("""
+    <p style="text-align: center; color: #888;">
+    © 2025 Analyseur de Charges Locatives Commerciales<br>
+    Version de démonstration 1.0.0
+    </p>
+    """, unsafe_allow_html=True)
+
+# Exécuter l'application
+if __name__ == "__main__":
+    pass  # L'application Streamlit s'exécute automatiquement
