@@ -684,3 +684,5 @@ else:
         <li>Pandas et Matplotlib pour l'analyse de données et les visualisations</li>
         <li>RegEx pour l'extraction de patterns dans le texte</li>
     </ul>
+    </div>
+    """, unsafe_allow_html=True)
