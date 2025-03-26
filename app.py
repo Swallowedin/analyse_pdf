@@ -435,39 +435,6 @@ if app_mode == "Analyser un document":
     
     with st.expander("Instructions de déploiement"):
         st.markdown("""
-        Pour déployer cette application sur Streamlit Cloud :
-        
-        1. **Préparez votre environnement GitHub** :
-           - Créez un nouveau dépôt GitHub
-           - Téléchargez ce script et nommez-le `app.py`
-           - Créez un fichier `requirements.txt` avec les dépendances suivantes :
-        
-        ```
-        streamlit==1.27.0
-        pandas==2.0.3
-        numpy==1.24.3
-        pillow==9.5.0
-        pytesseract==0.3.10
-        pdf2image==1.16.3
-        matplotlib==3.7.2
-        seaborn==0.12.2
-        ```
-        
-        2. **Configurations supplémentaires** :
-           - Pour l'OCR, ajoutez également les dépendances système dans un fichier `packages.txt` :
-        
-        ```
-        tesseract-ocr
-        tesseract-ocr-fra
-        poppler-utils
-        ```
-        
-        3. **Déploiement** :
-           - Connectez-vous à [Streamlit Cloud](https://streamlit.io/cloud)
-           - Créez une nouvelle application en pointant vers votre dépôt GitHub
-           - Configurez les paramètres de déploiement en précisant que vous avez des dépendances système
-           - Déployez l'application
-        """)
     
     st.markdown("---")
     st.markdown("""
