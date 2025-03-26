@@ -425,7 +425,7 @@ if app_mode == "Analyser un document":
                             st.markdown(f"Justification: {charge['justification']}", unsafe_allow_html=True)
                             st.markdown("---")
                         
-                        st.markdown("    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p>
+                        st.markdown("    <p>Pour une version plus complète et personnalisée adaptée à vos besoins spécifiques, n'hésitez pas à nous contacter.</p>"
     </div>
     
     # Ajouter un espace pour les informations de déploiement
